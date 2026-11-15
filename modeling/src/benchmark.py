@@ -19,6 +19,7 @@ from sklearn.svm import SVC
 C_VALUES = [0.01, 0.1, 1, 10, 100]
 GAMMA_VALUES = ["scale", 0.001, 0.01, 0.1, 1, 10]
 SELECTION_METRIC = "f1_macro"
+QUANTUM_SCALE_VALUES = [1.0, 0.5, 0.25, 0.1, 0.05, 0.02]  # input-angle scale (bandwidth)
 CLASSICAL_MODELS = ("linear", "poly2", "rbf")
 DISPLAY_NAMES = {
     "linear": "Linear SVM",
@@ -45,6 +46,8 @@ class ModelOutcome:
 
 def model_config(name: str) -> dict:
     fixed, grid = _GRIDS[name]
+    if name == "qsvm":
+        grid = {**grid, "scale": QUANTUM_SCALE_VALUES}
     return {**fixed, "class_weight": "balanced", "grid": grid, "selection_metric": SELECTION_METRIC}
 
 
@@ -94,7 +97,8 @@ def run_nested_cv(
 
     features_for_fold(train_idx, test_idx) -> (x_train, x_test).
     quantum, if given, needs states(features) and kernel(states_a, states_b);
-    it is run as a precomputed-kernel SVM on exactly the same folds.
+    it is run as a precomputed-kernel SVM on exactly the same folds. If it has a
+    `scales` attribute, states(features, scale=...) is tried for each one.
     """
     y = np.asarray(y)
     names = list(CLASSICAL_MODELS if classical else ()) + (["qsvm"] if quantum is not None else [])
@@ -105,25 +109,34 @@ def run_nested_cv(
     for k, (train, test) in enumerate(folds):
         x_train, x_test = features_for_fold(train, test)
         for name in names:
-            search = _search(name, seed, inner_folds)
             result = out[name]
+            scale = None
             start = time.perf_counter()
             if name == "qsvm":
-                train_states = quantum.states(x_train)
-                search.fit(quantum.kernel(train_states, train_states), y[train])
+                # The input scale is tuned like any other hyperparameter: by inner-fold
+                # score on the training cells only. Ties keep the earlier (larger) scale.
+                search = None
+                for candidate in getattr(quantum, "scales", None) or [None]:
+                    states = quantum.states(x_train) if candidate is None else quantum.states(x_train, scale=candidate)
+                    fitted = _search(name, seed, inner_folds).fit(quantum.kernel(states, states), y[train])
+                    if search is None or fitted.best_score_ > search.best_score_:
+                        search, scale, train_states = fitted, candidate, states
             else:
-                search.fit(x_train, y[train])
+                search = _search(name, seed, inner_folds).fit(x_train, y[train])
             result.fit_seconds[k] = time.perf_counter() - start
 
             start = time.perf_counter()
             if name == "qsvm":
-                held_out = quantum.kernel(quantum.states(x_test), train_states)
+                test_states = quantum.states(x_test) if scale is None else quantum.states(x_test, scale=scale)
+                held_out = quantum.kernel(test_states, train_states)
             else:
                 held_out = x_test
             result.pred[test] = search.predict(held_out)
             result.predict_seconds[k] = time.perf_counter() - start
             result.score[test] = search.decision_function(held_out)
             result.best_params[k] = _plain(search.best_params_)
+            if scale is not None:
+                result.best_params[k]["scale"] = scale
             if on_progress:
                 on_progress(name, k, result.fit_seconds[k] + result.predict_seconds[k])
     return out

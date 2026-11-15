@@ -85,7 +85,9 @@ class QuantumRingsEngine:
 
 
 class QuantumKernel:
-    def __init__(self, n_qubits: int, reps: int, entanglement: str = "full", engine=None):
+    def __init__(self, n_qubits: int, reps: int, entanglement: str = "full", engine=None,
+                 scales=(1.0,)):
+        self.scales = tuple(scales)  # candidate input scales, chosen on inner folds
         self.n_qubits = n_qubits
         self.reps = reps
         self.entanglement = entanglement
@@ -95,8 +97,10 @@ class QuantumKernel:
         self._template = self.engine.prepare(self.feature_map)
         self.circuits_run = 0
 
-    def states(self, features: np.ndarray) -> np.ndarray:
-        features = np.asarray(features, dtype=float)
+    def states(self, features: np.ndarray, scale: float = 1.0) -> np.ndarray:
+        """One simulated state per cell. `scale` multiplies the angles before loading:
+        it is the kernel's bandwidth, the counterpart of gamma for an RBF kernel."""
+        features = np.asarray(features, dtype=float) * scale
         if features.ndim != 2 or features.shape[1] != self.n_qubits:
             raise ValueError(
                 f"expected {self.n_qubits} features per cell, got shape {features.shape}"

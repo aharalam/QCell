@@ -31,7 +31,7 @@ import data
 import export_results as er
 import synthetic_control as sc
 from benchmark import (
-    CLASSICAL_MODELS, DISPLAY_NAMES, SELECTION_METRIC, fold_features, make_folds,
+    CLASSICAL_MODELS, DISPLAY_NAMES, QUANTUM_SCALE_VALUES, SELECTION_METRIC, fold_features, make_folds,
     model_config, run_nested_cv,
 )
 from features import FoldFeatures
@@ -136,8 +136,8 @@ def smoke_test(engine, seed) -> dict:
     report = {}
     for reps in (2, 3):
         x = rng.uniform(0, np.pi, size=(3, N_QUBITS))
-        measured = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine).states(x)
-        reference = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, ReferenceEngine()).states(x)
+        measured = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine).states(x, scale=0.25)
+        reference = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, ReferenceEngine()).states(x, scale=0.25)
         overlap = np.abs(np.sum(np.conj(reference) * measured, axis=1)) ** 2
         report[f"reps_{reps}_min_overlap_with_qiskit_reference"] = float(overlap.min())
         if overlap.min() < 1 - 1e-6:
@@ -234,7 +234,7 @@ def main(argv=None) -> str:
             start, result = time.perf_counter(), {}
             for key, target in targets.items():
                 print(f"  {key} reps={reps}", flush=True)
-                kernel = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine)
+                kernel = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine, scales=QUANTUM_SCALE_VALUES)
                 result[key] = run_nested_cv(
                     target.y, target.folds, target.features_for_fold, args.seed, args.inner_folds,
                     quantum=kernel, classical=False, on_progress=progress)["qsvm"]
@@ -274,7 +274,9 @@ def main(argv=None) -> str:
             x = x_display[key]
             gamma = float(1.0 / (x.shape[1] * x.var()))
             kernels = er.classical_display_kernels(x, rbf_gamma=gamma, poly_gamma=gamma, poly_coef0=0.0)
-            states = final_kernel.states(x)
+            chosen = [params["scale"] for params in outcomes[key]["qsvm"].best_params.values()]
+            display_scale = max(set(chosen), key=lambda s: (chosen.count(s), s))
+            states = final_kernel.states(x, scale=display_scale)
             kernels["qsvm"] = quantum_kernels[key] = final_kernel.kernel(states, states)
             models = {}
             for name in (*CLASSICAL_MODELS, "qsvm"):
@@ -311,7 +313,9 @@ def main(argv=None) -> str:
                 kernel_params={
                     "rbf": {"gamma": gamma, "gamma_source": "scikit-learn 'scale' on the display features"},
                     "poly2": {"gamma": gamma, "degree": 2, "coef0": 0.0},
-                    "qsvm": {"reps": final_reps, "entanglement": ENTANGLEMENT, "n_qubits": N_QUBITS},
+                    "qsvm": {"reps": final_reps, "entanglement": ENTANGLEMENT, "n_qubits": N_QUBITS,
+                             "scale": display_scale,
+                             "scale_source": "input scale selected most often across the outer folds"},
                 },
                 kernel_fit_scope=(
                     f"Display only. The feature pipeline was fitted on all {len(ids)} benchmark cells and "
@@ -349,7 +353,14 @@ def main(argv=None) -> str:
             "entanglement": ENTANGLEMENT,
             "attempts": [{"reps": reps, "is_final": reps == final_reps, "reason": reasons[reps]}
                          for reps, _, _ in attempts],
-            "circuits_run_note": "one circuit per cell per fold; kernel entries are state overlaps",
+            "circuits_run_note": "one circuit per cell per fold per input scale; kernel entries are state overlaps",
+            "input_scale_grid": QUANTUM_SCALE_VALUES,
+            "input_scale_note": (
+                "Features are multiplied by an input scale before being loaded as rotation angles. "
+                "Unscaled (1.0), this 8-qubit kernel concentrates: nearly every pair of cells has "
+                "similarity close to 1/256, which leaves the SVM nothing to learn from. The scale is "
+                "therefore tuned on inner folds only, exactly as gamma is tuned for the RBF kernel."
+            ),
             "smoke_test": check,
         },
         "synthetic_control": {"rule_description": sc.RULE_DESCRIPTION,

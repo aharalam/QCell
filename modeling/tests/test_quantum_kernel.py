@@ -116,3 +116,19 @@ def test_quantum_rings_states_match_the_reference_simulation(n_qubits, reps):
     measured = QuantumKernel(n_qubits, reps, engine=quantum_rings_engine_from_env()).states(x)
     overlap = np.abs(np.sum(np.conj(reference) * measured, axis=1)) ** 2
     assert overlap == pytest.approx(np.ones(4), abs=1e-6)
+
+
+def test_input_scale_shrinks_the_angles_before_they_are_loaded():
+    kernel = QuantumKernel(n_qubits=3, reps=2, engine=ReferenceEngine())
+    x = angles(4, 3, seed=9)
+    assert kernel.states(x, scale=0.25) == pytest.approx(kernel.states(0.25 * x))
+    assert kernel.states(x) == pytest.approx(kernel.states(x, scale=1.0))
+
+
+def test_smaller_input_scale_undoes_kernel_concentration():
+    kernel = QuantumKernel(n_qubits=8, reps=2, engine=ReferenceEngine())
+    x = angles(10, 8, seed=10)
+    off_diagonal = ~np.eye(10, dtype=bool)
+    wide = kernel.kernel(kernel.states(x), kernel.states(x))[off_diagonal].mean()
+    narrow = kernel.kernel(kernel.states(x, scale=0.05), kernel.states(x, scale=0.05))[off_diagonal].mean()
+    assert wide < 0.02 and narrow > 10 * wide and narrow > 0.15

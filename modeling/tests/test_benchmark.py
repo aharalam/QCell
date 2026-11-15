@@ -113,3 +113,39 @@ def test_a_fold_missing_a_class_is_refused():
     y = np.array([0] * 20 + [1] * 2)
     with pytest.raises(ValueError, match="rare"):
         make_folds(y, n_folds=5, seed=0)
+
+
+class ScaledRbf:
+    """Kernel whose usefulness depends on the input scale, like a quantum bandwidth."""
+
+    scales = (1.0, 0.03, 0.0001)
+
+    def states(self, features, scale=1.0):
+        return features * scale
+
+    def kernel(self, a, b):
+        return rbf_kernel(a, b, gamma=2000.0)
+
+
+def test_quantum_input_scale_is_chosen_on_inner_folds_and_recorded():
+    # At scale 1.0 this kernel is the identity (every cell unlike every other) and at
+    # 0.0001 it is constant; only the middle scale carries the XOR structure.
+    x, y = toy("xor", n=160, seed=4)
+    folds = make_folds(y, 4, seed=0)
+    out = run_nested_cv(y, folds, precomputed(x), seed=0, inner_folds=3, quantum=ScaledRbf(), classical=False)
+    assert all(params["scale"] == 0.03 for params in out["qsvm"].best_params.values())
+    assert all(set(params) == {"C", "scale"} for params in out["qsvm"].best_params.values())
+    assert balanced_accuracy_score(y, out["qsvm"].pred) > 0.85
+
+
+def test_quantum_input_scale_choice_ignores_held_out_labels():
+    x, y = toy("xor", n=160, seed=5)
+    folds = make_folds(y, 4, seed=0)
+    honest = run_nested_cv(y, folds, precomputed(x), seed=0, inner_folds=3, quantum=ScaledRbf(), classical=False)
+    train, test = folds[0]
+    corrupted = y.copy()
+    corrupted[test] = 1 - corrupted[test]
+    tampered = run_nested_cv(corrupted, [folds[0]], precomputed(x), seed=0, inner_folds=3,
+                             quantum=ScaledRbf(), classical=False)
+    assert tampered["qsvm"].best_params[0] == honest["qsvm"].best_params[0]
+    assert np.array_equal(tampered["qsvm"].pred[test], honest["qsvm"].pred[test])
