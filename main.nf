@@ -7,8 +7,13 @@ params.n_cells = 200
 process RUN_QUANTUM_PIPELINE {
     container 'python:3.10-slim'
     cpus 6
-    memory '16 GB'
+    // More memory on each retry, in case the container was killed for running out of it
+    memory { 16.GB * task.attempt }
     time '3h'
+    // Retry when AWS Batch stops the task (Spot reclaim, out of memory), but stop at once
+    // on a real script error (Python exits 1, bad arguments exit 2) so it isn't re-run for nothing
+    errorStrategy { task.exitStatus in [1, 2] ? 'terminate' : 'retry' }
+    maxRetries 2
     // Create both secrets in Seqera Platform before launching.
     // Remove these two lines when running with --engine reference.
     secret 'QUANTUM_RINGS_API_KEY'
@@ -26,7 +31,8 @@ process RUN_QUANTUM_PIPELINE {
     pip install --quiet numpy scikit-learn scanpy umap-learn qiskit matplotlib pylatexenc \\
         QuantumRingsLib quantumrings-toolkit-qiskit
 
-    python ${src}/runner.py \\
+    # -u: write output as it happens, so a killed task still shows how far it got
+    python -u ${src}/runner.py \\
         --engine ${params.engine} \\
         --n-cells ${params.n_cells} \\
         --workers ${task.cpus} \\
