@@ -4,11 +4,16 @@ params.outdir  = 'results'        // use an s3:// path when launching on AWS Bat
 params.mode    = 'full'           // 'smoke': reference simulator, small sample, no secrets, a few minutes
 params.engine  = 'quantum_rings'  // full mode only; 'reference' runs without a Quantum Rings account
 params.n_cells = 200              // full mode only
-// QuantumRingsLib needs Python 3.11+; on 3.10 pip silently installs a 2024 release
-params.container = 'python:3.12-slim'
+// QuantumRingsLib needs Python 3.11+; on 3.10 pip silently installs a 2024 release.
+// Not the -slim image: Nextflow's task wrapper needs `ps` (procps) to collect task
+// metrics, and slim images don't include it, so the task fails before the script runs.
+params.container = 'python:3.12-trixie'
 
-// Shared setup: print what is being installed so a failure shows where it stopped
-def setupScript() {
+// Shared setup: print what is being installed so a failure shows where it stopped.
+// requireQuantumRings: false in smoke mode, which runs on the reference simulator, so a
+// Quantum Rings import failure is reported as a warning there instead of stopping the run.
+def setupScript(boolean requireQuantumRings) {
+    def onImportFailure = requireQuantumRings ? 'exit 1' : 'true'
     """
     echo "== \$(python --version 2>&1) on \$(uname -m), \$(getconf _NPROCESSORS_ONLN) CPUs"
     echo "== Installing packages"
@@ -17,7 +22,12 @@ def setupScript() {
         QuantumRingsLib quantumrings-toolkit-qiskit
     echo "== Installed versions"
     pip list 2>/dev/null | grep -i -E '^(numpy|scikit-learn|scanpy|umap-learn|qiskit|quantumrings)' || true
-    python -c "import QuantumRingsLib, quantumrings.toolkit.qiskit; print('== Quantum Rings imports OK')"
+    if python -c "import QuantumRingsLib, quantumrings.toolkit.qiskit"; then
+        echo "== Quantum Rings imports OK"
+    else
+        echo "== WARNING: Quantum Rings failed to import on \$(uname -m) (exit \$?)" >&2
+        ${onImportFailure}
+    fi
     """
 }
 
@@ -38,7 +48,7 @@ process SMOKE_TEST {
 
     script:
     """
-    ${setupScript()}
+    ${setupScript(false)}
     echo "== Running smoke benchmark"
     python -u ${src}/runner.py \\
         --engine reference \\
@@ -78,7 +88,7 @@ process RUN_QUANTUM_PIPELINE {
         if [ -z "\${!name:-}" ]; then echo "== Secret \$name is not set" >&2; exit 1; fi
     done
     echo "== Quantum Rings secrets are set"
-    ${setupScript()}
+    ${setupScript(true)}
     echo "== Running benchmark"
     # -u: write output as it happens, so a killed task still shows how far it got
     python -u ${src}/runner.py \\
