@@ -84,7 +84,7 @@ HARD RULES (apply to every page, now and in every later change)
 R1. Never invent, seed, hard-code or auto-generate any score, cell, prediction, runtime, label or kernel value. Every number shown must come from an uploaded bundle. If data is missing, show an empty state that says what is missing.
 R2. Never say or imply that quantum beats classical, or the reverse, except in a sentence generated from the uploaded numbers.
 R3. The data is from a healthy donor. Never use the words sick, diseased, cancer, tumor, patient, diagnosis, resistant or drug target for these cells. The positive biological class is "Dendritic cell". The app is not a clinical or diagnostic tool.
-R4. Anything from the synthetic control must carry a visible "Synthetic control" tag. Never describe it as a discovery in real data.
+R4. Anything from the synthetic control must carry a visible "Synthetic control" tag, and anything from the quantum_structured target a visible "Engineered signal" tag. Never describe either as a discovery in real data. For quantum_structured, always show manifest.quantum_structured.caution next to its results.
 R5. A 2D or 3D plot is a projection. Never caption a plot as proof that a model separated the cells. Kernel similarity is not a causal explanation.
 R6. When a bundle is flagged as a placeholder, show a fixed banner on every page: "PLACEHOLDER DATA: not measured results", and add a "placeholder" watermark to every chart.
 R7. The app stores no API keys or secrets.
@@ -118,13 +118,14 @@ File run_manifest.json:
   quantum: { sdk, sdk_version, backend, n_qubits: int, feature_map, entanglement, attempts: [ { reps: int, is_final: boolean, reason } ],
              input_scale_grid: [float], reps_grid: [int], input_scale_note, simulator_settings, parallel_workers: int, smoke_test: object }   (the last six are optional)
   synthetic_control: { rule_description, features_used: [text], seed: int }
+  quantum_structured: { evidence_type, rule_description, feature_note, n_qubits: int, reps: int, input_scale: float, entanglement, seed: int, label_engine, per_cell_value, caution }   (present when the third target is)
   pipeline_stages: [ { id, name, tool, status: "succeeded" | "failed" | "skipped" | "not_run", started_at, duration_seconds: float, artifact, link } ]
   seqera: { run_url, pipeline, status }   (optional)
   software_versions: object of name -> version
 
 File results.json:
   schema_version, run_id
-  targets: { biological: T, synthetic: T }
+  targets: { biological: T, synthetic: T, quantum_structured: T }   (quantum_structured is optional)
   T = {
     positive_label_name, negative_label_name, n_cells: int, n_positive: int,
     models: { linear: M, poly2: M, rbf: M, qsvm: M }
@@ -142,7 +143,7 @@ File results.json:
 
 File cells.json:
   schema_version, run_id
-  targets: { biological: C, synthetic: C }
+  targets: { biological: C, synthetic: C, quantum_structured: C }   (quantum_structured is optional and has 3 features, not 8)
   C = {
     feature_names: [text],
     cells: [ {
@@ -156,19 +157,34 @@ File cells.json:
       pred: { linear: 0|1, poly2: 0|1, rbf: 0|1, qsvm: 0|1 },
       score: { linear: float, poly2: float, rbf: float, qsvm: float },   (optional, uncalibrated SVM decision values)
       planted: { x1: float, x2: float }                                 (synthetic only)
+      extra: { expectation: float }                                     (quantum_structured only: the measured value; the label is 1 above the median)
     } ],
     decision_regions: { x1_range: [min,max], x2_range: [min,max], resolution: int, grids: { linear: [[0|1]], poly2: [[0|1]], rbf: [[0|1]], qsvm: [[0|1]] } }   (synthetic only, optional)
   }
 
 File kernels.json:
   schema_version, run_id
-  targets: { biological: K, synthetic: K }
+  targets: { biological: K, synthetic: K, quantum_structured: K }   (quantum_structured is optional)
   K = {
     cell_ids: [text],                 (one ordering shared by all three matrices)
     fit_scope: text,                  (states that these are display-only fits, not the matrices used for scoring)
     params: { rbf: object, poly2: object, qsvm: object },
     matrices: { rbf: [[float]], poly2: [[float]], qsvm: [[float]] }
   }
+
+File collapse_explorer.json (optional; data for the kernel-collapse explorer):
+  schema_version, run_id
+  target: "biological", n_qubits: int, reps: int, entanglement
+  uniform_similarity: float            (1 / 2^n_qubits: what a fully collapsed kernel gives every pair of cells)
+  positive_label_name, negative_label_name
+  cell_ids: [text], y_true: [0|1], annotation: [text]      (one fixed subset of cells, rare class last)
+  scales: [ {
+    scale: float,                      (input scale; 1.0 is the unscaled circuit)
+    matrix: [[float]],                 (quantum kernel between the subset's cells, same order as cell_ids)
+    off_diagonal_mean, off_diagonal_median, off_diagonal_min, off_diagonal_max: float,
+    accuracy: { balanced_accuracy, macro_f1, rare_recall: float, predicted_positive: int, n_cells: int }
+  } ]
+  matrix_note, accuracy_note           (show both; the matrices are display-only, the accuracy is held-out)
 
 ADMIN PAGE: "Upload run" (admins only)
 - Six file inputs: run_manifest.json, results.json, cells.json, kernels.json, circuit image (optional), Seqera screenshot (optional).
@@ -193,7 +209,7 @@ APP SHELL
 - Pages: Overview, Compare Models, Quantum Lab, Pipeline, plus the admin-only Upload run page. For now each public page shows only its title and an empty state; later prompts fill them in.
 - A data layer that loads the active run: the featured run, or else the most recent run with status "complete". It fetches the four JSON files from their URLs once and shares them with all pages. Show a loading state and a clear error state if a file cannot be fetched.
 - Global controls in the header, kept in the URL query string so links are shareable:
-  - Target: "Biological: Dendritic vs Rest" or "Synthetic: Planted Interaction vs Background" (default biological).
+  - Target: "Biological: Dendritic vs Rest", "Synthetic: Planted Interaction vs Background", or, when the run has it, "Engineered: Circuit-Structured Signal" (default biological).
   - Baseline to compare against QSVM: Linear, Poly-2 or RBF (default RBF).
 - Header title "Quantum vs Classical: Finding Rare Cells", subtitle "Reproducible single-cell SVM benchmarks on healthy-donor PBMC data."
 - Status chips under the header, all read from the manifest: dataset name, "Biological" or "Synthetic control", run id, execution status, run timestamp.
