@@ -115,7 +115,8 @@ File run_manifest.json:
   sampling: { strategy, n_benchmark_cells: int, n_positive: int, seed: int }
   preprocessing: { feature_pipeline, n_features: int, fitted_within_training_folds_only: boolean }
   cv: { outer_folds: int, inner_folds: int, selection_metric, seed: int }
-  quantum: { sdk, sdk_version, backend, n_qubits: int, feature_map, entanglement, attempts: [ { reps: int, is_final: boolean, reason } ] }
+  quantum: { sdk, sdk_version, backend, n_qubits: int, feature_map, entanglement, attempts: [ { reps: int, is_final: boolean, reason } ],
+             input_scale_grid: [float], input_scale_note, simulator_settings, parallel_workers: int, smoke_test: object }   (the last five are optional)
   synthetic_control: { rule_description, features_used: [text], seed: int }
   pipeline_stages: [ { id, name, tool, status: "succeeded" | "failed" | "skipped" | "not_run", started_at, duration_seconds: float, artifact, link } ]
   seqera: { run_url, pipeline, status }   (optional)
@@ -290,9 +291,10 @@ Build the Compare Models page. Rules R1 to R7 still apply.
 Build the Quantum Lab page. Rules R1 to R7 still apply.
 
 1. "The quantum part, in plain words" panel at the top, written for a judge who is not a physicist. Use this text, filling the brackets from the manifest:
-   "Each cell is described by [n_features] numbers. A classical kernel compares two cells with a formula. The quantum kernel compares them a different way: it loads each cell's numbers into a [n_qubits]-qubit circuit as rotation angles, and measures how much the two resulting quantum states overlap. That overlap is the similarity score. A classical SVM then does the rest, exactly as it does for the other models. The circuit was run on the [quantum.sdk] simulator, not on quantum hardware. Whether this different notion of similarity helps is an empirical question, and the Compare Models page shows what we measured."
+   "Each cell is described by [n_features] numbers. A classical kernel compares two cells with a formula. The quantum kernel compares them a different way: it loads each cell's numbers, shrunk by a tuned scale, into a [n_qubits]-qubit circuit as rotation angles, and measures how much the two resulting quantum states overlap. That overlap is the similarity score. A classical SVM then does the rest, exactly as it does for the other models. The circuit was run on the [quantum.sdk] simulator, not on quantum hardware. Whether this different notion of similarity helps is an empirical question, and the Compare Models page shows what we measured."
 
 2. Circuit panel: show the uploaded circuit image (Run.circuit_image_url) with a settings table from manifest.quantum: feature map, qubits, repetitions for each attempt, entanglement pattern, SDK and version, backend. Add: "One qubit carries one input feature. If features are principal components, a qubit represents a component, not an individual gene." If no image was uploaded, show an empty state, not a drawn circuit.
+   Below the table, when the manifest has them: show manifest.quantum.input_scale_note as a "Why the inputs are scaled" note, the candidate scales from input_scale_grid, the scale chosen in each outer fold (results.targets[target].models.qsvm.folds[].best_params.scale) as a small table, simulator_settings, and the smoke_test values labeled "Agreement with a reference simulation (1.0 is identical)". State that the scale was chosen on inner folds only, like gamma for RBF.
 
 3. Kernel heatmaps: three heatmaps side by side for rbf, poly2 and qsvm from kernels.json, same cell order, same size, each with its own color scale and a visible color bar. Draw a thin divider and labels where the cell order changes from the other class to the rare class, using y_true from cells.json. Hovering shows the two cell ids, their true labels and the similarity value. Show fit_scope and each kernel's params under the plots. Caption: "Brighter means the kernel treats two cells as more alike. Block structure shows how each kernel organizes the classes; it does not by itself mean better classification."
 
