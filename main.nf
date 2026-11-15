@@ -1,11 +1,57 @@
 nextflow.enable.dsl=2
 
 params.outdir  = 'results'        // use an s3:// path when launching on AWS Batch
-params.engine  = 'quantum_rings'  // 'reference' runs without a Quantum Rings account
-params.n_cells = 200
+params.mode    = 'full'           // 'smoke': reference simulator, small sample, no secrets, a few minutes
+params.engine  = 'quantum_rings'  // full mode only; 'reference' runs without a Quantum Rings account
+params.n_cells = 200              // full mode only
+// QuantumRingsLib needs Python 3.11+; on 3.10 pip silently installs a 2024 release
+params.container = 'python:3.12-slim'
+
+// Shared setup: print what is being installed so a failure shows where it stopped
+def setupScript() {
+    """
+    echo "== \$(python --version 2>&1) on \$(uname -m), \$(getconf _NPROCESSORS_ONLN) CPUs"
+    echo "== Installing packages"
+    pip install --no-cache-dir --progress-bar off --root-user-action=ignore \\
+        numpy scikit-learn scanpy umap-learn qiskit matplotlib pylatexenc \\
+        QuantumRingsLib quantumrings-toolkit-qiskit
+    echo "== Installed versions"
+    pip list 2>/dev/null | grep -i -E '^(numpy|scikit-learn|scanpy|umap-learn|qiskit|quantumrings)' || true
+    python -c "import QuantumRingsLib, quantumrings.toolkit.qiskit; print('== Quantum Rings imports OK')"
+    """
+}
+
+// Quick end-to-end check of the container, packages, data download and bundle export.
+// Uses no secrets, so it also runs when the secrets themselves are the problem.
+process SMOKE_TEST {
+    container params.container
+    cpus 2
+    memory '8 GB'
+    time '45m'
+    publishDir "${params.outdir}/smoke", mode: 'copy'
+
+    input:
+    path src
+
+    output:
+    path "out/*/dashboard_bundle/*", emit: dashboard_bundle
+
+    script:
+    """
+    ${setupScript()}
+    echo "== Running smoke benchmark"
+    python -u ${src}/runner.py \\
+        --engine reference \\
+        --n-cells 80 \\
+        --outer-folds 2 \\
+        --inner-folds 2 \\
+        --out out \\
+        --run-id smoke-${workflow.runName}
+    """
+}
 
 process RUN_QUANTUM_PIPELINE {
-    container 'python:3.10-slim'
+    container params.container
     cpus 6
     // More memory on each retry, in case the container was killed for running out of it
     memory { 16.GB * task.attempt }
@@ -14,8 +60,8 @@ process RUN_QUANTUM_PIPELINE {
     // on a real script error (Python exits 1, bad arguments exit 2) so it isn't re-run for nothing
     errorStrategy { task.exitStatus in [1, 2] ? 'terminate' : 'retry' }
     maxRetries 2
-    // Create both secrets in Seqera Platform before launching.
-    // Remove these two lines when running with --engine reference.
+    // Create both secrets in Seqera Platform before launching. The AWS Batch execution role
+    // needs secretsmanager:GetSecretValue, or the container never starts.
     secret 'QUANTUM_RINGS_API_KEY'
     secret 'QUANTUM_RINGS_ACCOUNT'
     publishDir params.outdir, mode: 'copy'
@@ -28,9 +74,12 @@ process RUN_QUANTUM_PIPELINE {
 
     script:
     """
-    pip install --quiet numpy scikit-learn scanpy umap-learn qiskit matplotlib pylatexenc \\
-        QuantumRingsLib quantumrings-toolkit-qiskit
-
+    for name in QUANTUM_RINGS_API_KEY QUANTUM_RINGS_ACCOUNT; do
+        if [ -z "\${!name:-}" ]; then echo "== Secret \$name is not set" >&2; exit 1; fi
+    done
+    echo "== Quantum Rings secrets are set"
+    ${setupScript()}
+    echo "== Running benchmark"
     # -u: write output as it happens, so a killed task still shows how far it got
     python -u ${src}/runner.py \\
         --engine ${params.engine} \\
@@ -43,5 +92,12 @@ process RUN_QUANTUM_PIPELINE {
 
 workflow {
     // Stage the whole source folder: runner.py imports the modules next to it.
-    RUN_QUANTUM_PIPELINE(file("${projectDir}/modeling/src", checkIfExists: true))
+    def src = file("${projectDir}/modeling/src", checkIfExists: true)
+    if (params.mode == 'smoke') {
+        SMOKE_TEST(src)
+    } else if (params.mode == 'full') {
+        RUN_QUANTUM_PIPELINE(src)
+    } else {
+        error "Unknown --mode '${params.mode}'. Use 'smoke' or 'full'."
+    }
 }
