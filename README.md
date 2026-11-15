@@ -8,12 +8,13 @@ Built at Hack The Nest 2026. This is a research and education benchmark on healt
 
 Does a quantum feature map give any measurable benefit on rare-cell classification, after fair, leakage-free tuning and held-out evaluation?
 
-Two targets are scored with the same folds, the same cells and the same 8 features for every model:
+Three targets are scored. Within each target, every model sees the same folds, cells and features:
 
 | Target | Positive class | Type |
 |---|---|---|
 | Biological | Dendritic cell vs other PBMCs | Real data, labels inferred from marker-gene clustering |
 | Synthetic control | Planted two-feature XOR vs background | Engineered; says nothing about real cells |
+| Circuit-structured signal | Label measured from each cell's own 3-qubit state | Engineered to have quantum-circuit structure; shows what a quantum kernel can detect, not that such signals exist in cells |
 
 ## How it works
 
@@ -79,6 +80,8 @@ Each run writes to `artifacts/<run_id>/`:
 | `dashboard_bundle/cells.json` | Per-cell labels, out-of-fold predictions, features and display coordinates |
 | `dashboard_bundle/kernels.json` | RBF, polynomial and quantum kernel matrices in one cell order |
 | `dashboard_bundle/circuit.png` | The feature-map circuit |
+| `dashboard_bundle/collapse_explorer.json` | 8-qubit quantum kernel on a subset of cells at input scales 1.0, 0.1 and 0.05, with held-out accuracy at each |
+| `dashboard_bundle/circuit_quantum_structured.png` | The 3-qubit circuit that generates the engineered target's labels |
 | `features.npz`, `kernel_quantum.npz` | Arrays for reuse outside the dashboard |
 
 Check any bundle the way the dashboard will:
