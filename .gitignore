@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+data/
+artifacts/
+placeholder_bundle/
+.DS_Store
