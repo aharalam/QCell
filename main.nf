@@ -1,7 +1,9 @@
-// main.nf
 nextflow.enable.dsl=2
 
 process RUN_QUANTUM_PIPELINE {
+    // 1. THIS FIXES THE AWS BATCH ERROR
+    container 'python:3.10-slim'
+    
     publishDir "${params.outdir}/results", mode: 'copy'
 
     output:
@@ -12,8 +14,8 @@ process RUN_QUANTUM_PIPELINE {
     """
     pip install --quiet scikit-learn qiskit 
     
-    // REPLACE THIS with your actual python script name from the repo
-    python your_main_script.py 
+    # 2. THIS FIXES THE SCRIPT ERROR - CHANGE "main.py" TO YOUR ACTUAL FILENAME
+    python main.py
     """
 }
 
