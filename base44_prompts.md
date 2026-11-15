@@ -63,7 +63,7 @@ Things the export must get right, because the app checks them on upload:
 - Kernel matrices are square, share one `cell_ids` ordering, and are computed on the same cells for RBF, poly-2 and quantum.
 - Kernel-PCA coordinates are computed in Python (`sklearn.decomposition.KernelPCA(kernel="precomputed", n_components=3)`) on those same matrices. The app does not do linear algebra.
 - Kernels and Kernel-PCA shown in the app come from a display-only fit. Say so in `fit_scope`. They are never the matrices used for scoring.
-- If `reps=3` was run because `reps=2` did not beat RBF on the planted control, export **both** attempts. The app shows both.
+- The QSVM's repetitions and input scale are tuned on inner folds, so each fold's choice is in `best_params` (`reps`, `scale`, `C`). If a run ever tries several fixed configurations instead, export every attempt. The app shows all of them.
 
 ---
 
@@ -116,7 +116,7 @@ File run_manifest.json:
   preprocessing: { feature_pipeline, n_features: int, fitted_within_training_folds_only: boolean }
   cv: { outer_folds: int, inner_folds: int, selection_metric, seed: int }
   quantum: { sdk, sdk_version, backend, n_qubits: int, feature_map, entanglement, attempts: [ { reps: int, is_final: boolean, reason } ],
-             input_scale_grid: [float], input_scale_note, simulator_settings, parallel_workers: int, smoke_test: object }   (the last five are optional)
+             input_scale_grid: [float], reps_grid: [int], input_scale_note, simulator_settings, parallel_workers: int, smoke_test: object }   (the last six are optional)
   synthetic_control: { rule_description, features_used: [text], seed: int }
   pipeline_stages: [ { id, name, tool, status: "succeeded" | "failed" | "skipped" | "not_run", started_at, duration_seconds: float, artifact, link } ]
   seqera: { run_url, pipeline, status }   (optional)
@@ -294,7 +294,7 @@ Build the Quantum Lab page. Rules R1 to R7 still apply.
    "Each cell is described by [n_features] numbers. A classical kernel compares two cells with a formula. The quantum kernel compares them a different way: it loads each cell's numbers, shrunk by a tuned scale, into a [n_qubits]-qubit circuit as rotation angles, and measures how much the two resulting quantum states overlap. That overlap is the similarity score. A classical SVM then does the rest, exactly as it does for the other models. The circuit was run on the [quantum.sdk] simulator, not on quantum hardware. Whether this different notion of similarity helps is an empirical question, and the Compare Models page shows what we measured."
 
 2. Circuit panel: show the uploaded circuit image (Run.circuit_image_url) with a settings table from manifest.quantum: feature map, qubits, repetitions for each attempt, entanglement pattern, SDK and version, backend. Add: "One qubit carries one input feature. If features are principal components, a qubit represents a component, not an individual gene." If no image was uploaded, show an empty state, not a drawn circuit.
-   Below the table, when the manifest has them: show manifest.quantum.input_scale_note as a "Why the inputs are scaled" note, the candidate scales from input_scale_grid, the scale chosen in each outer fold (results.targets[target].models.qsvm.folds[].best_params.scale) as a small table, simulator_settings, and the smoke_test values labeled "Agreement with a reference simulation (1.0 is identical)". State that the scale was chosen on inner folds only, like gamma for RBF.
+   Below the table, when the manifest has them: show manifest.quantum.input_scale_note as a "Why the inputs are scaled" note, the candidate scales from input_scale_grid, the repetitions and scale chosen in each outer fold (results.targets[target].models.qsvm.folds[].best_params.reps and .scale) as a small table, the candidate repetitions from manifest.quantum.reps_grid when present, simulator_settings, and the smoke_test values labeled "Agreement with a reference simulation (1.0 is identical)". State that the scale was chosen on inner folds only, like gamma for RBF.
 
 3. Kernel heatmaps: three heatmaps side by side for rbf, poly2 and qsvm from kernels.json, same cell order, same size, each with its own color scale and a visible color bar. Draw a thin divider and labels where the cell order changes from the other class to the rare class, using y_true from cells.json. Hovering shows the two cell ids, their true labels and the similarity value. Show fit_scope and each kernel's params under the plots. Caption: "Brighter means the kernel treats two cells as more alike. Block structure shows how each kernel organizes the classes; it does not by itself mean better classification."
 
@@ -452,6 +452,6 @@ Re-read rules R2, R3, R4 and R5 and rewrite any heading, caption, tooltip or but
 | Streamlit dashboard, no React | Base44 app (which generates React) | You asked for Base44. Python cannot run there, so the dashboard reads exported JSON. |
 | `kernel_*.npz`, `features.npz`, `processed.h5ad` feed the dashboard | `cells.json` and `kernels.json` feed the dashboard; the NPZ and H5AD files stay in the pipeline's artifact folder | A browser cannot read NPZ or H5AD. |
 | Kernel-PCA is "the visual proof" that quantum space "untangles" rare cells (2.4) | Shown as a projection with a caption saying it is not evidence of separation | Section 1 of the same spec says a 3D projection cannot prove separation. The stricter rule wins. |
-| Retry with `reps=3` if QSVM loses to RBF on the planted control (5) | Both attempts are exported and shown | Choosing `reps` after seeing held-out scores is a form of tuning on the holdout, which section 5 also forbids. Showing every attempt keeps it honest. If time allows, pick `reps` on inner folds instead. |
+| Retry with `reps=3` if QSVM loses to RBF on the planted control (5) | `reps` (1, 2 or 3) is chosen on inner folds, with the input scale and C | Choosing `reps` after seeing held-out scores is tuning on the holdout, which section 5 also forbids. An earlier run that followed the retry rule is kept as `qcell-run-01` for comparison. |
 | Prior reported numbers table (7) | Not in the app anywhere | They are unverified until their artifacts are loaded. |
 | Matplotlib/seaborn heatmaps and circuit drawing | Heatmaps drawn in the app from `kernels.json`; circuit is an image exported from Qiskit | No Python in Base44. |

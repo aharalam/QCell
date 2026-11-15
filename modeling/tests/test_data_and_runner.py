@@ -65,11 +65,18 @@ def test_runner_writes_a_bundle_the_dashboard_accepts(tmp_path, monkeypatch):
     assert "NOT Quantum Rings" in manifest["quantum"]["backend"]  # reference engine is labelled as such
     assert "not-a-real-key" not in json.dumps(bundle)
 
-    declared = sorted((a["reps"], a["is_final"]) for a in manifest["quantum"]["attempts"])
+    # Repetitions and input scale are tuned per outer fold on inner folds: there is no
+    # retry on held-out scores, so results carry no "attempts" and each fold records its choice.
+    quantum = manifest["quantum"]
+    assert quantum["reps_grid"] == [1, 2, 3] and 1.0 in quantum["input_scale_grid"]
+    assert [a["is_final"] for a in quantum["attempts"]] == [True]
     for target in ("biological", "synthetic"):
-        exported = bundle["results"]["targets"][target]["models"]["qsvm"]["attempts"]
-        assert sorted((a["reps"], a["is_final"]) for a in exported) == declared
-    assert sum(a["is_final"] for a in manifest["quantum"]["attempts"]) == 1
+        qsvm = bundle["results"]["targets"][target]["models"]["qsvm"]
+        assert "attempts" not in qsvm
+        for fold in qsvm["folds"]:
+            assert fold["best_params"]["reps"] in quantum["reps_grid"]
+            assert fold["best_params"]["scale"] in quantum["input_scale_grid"]
+        assert qsvm["config"]["grid"]["reps"] == [1, 2, 3]
 
     synthetic = bundle["cells"]["targets"]["synthetic"]["cells"]
     for cell in synthetic:

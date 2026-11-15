@@ -149,3 +149,39 @@ def test_quantum_input_scale_choice_ignores_held_out_labels():
                              quantum=ScaledRbf(), classical=False)
     assert tampered["qsvm"].best_params[0] == honest["qsvm"].best_params[0]
     assert np.array_equal(tampered["qsvm"].pred[test], honest["qsvm"].pred[test])
+
+
+class RepsKernel(ScaledRbf):
+    """Two circuit depths: one useless at every scale, one useful at the middle scale."""
+
+    def __init__(self, reps):
+        self.params = {"reps": reps}
+
+    def kernel(self, a, b):
+        if self.params["reps"] == 1:
+            return np.eye(len(a), len(b))  # carries no information
+        return super().kernel(a, b)
+
+
+def test_quantum_repetitions_are_chosen_on_inner_folds_alongside_the_scale():
+    x, y = toy("xor", n=160, seed=6)
+    folds = make_folds(y, 4, seed=0)
+    out = run_nested_cv(y, folds, precomputed(x), seed=0, inner_folds=3,
+                        quantum=[RepsKernel(1), RepsKernel(2)], classical=False)
+    for params in out["qsvm"].best_params.values():
+        assert params["reps"] == 2 and params["scale"] == 0.03 and set(params) == {"C", "scale", "reps"}
+    assert balanced_accuracy_score(y, out["qsvm"].pred) > 0.85
+
+
+def test_quantum_repetition_choice_ignores_held_out_labels():
+    x, y = toy("xor", n=160, seed=7)
+    folds = make_folds(y, 4, seed=0)
+    kernels = [RepsKernel(1), RepsKernel(2)]
+    honest = run_nested_cv(y, folds, precomputed(x), seed=0, inner_folds=3, quantum=kernels, classical=False)
+    train, test = folds[0]
+    corrupted = y.copy()
+    corrupted[test] = 1 - corrupted[test]
+    tampered = run_nested_cv(corrupted, [folds[0]], precomputed(x), seed=0, inner_folds=3,
+                             quantum=kernels, classical=False)
+    assert tampered["qsvm"].best_params[0] == honest["qsvm"].best_params[0]
+    assert np.array_equal(tampered["qsvm"].pred[test], honest["qsvm"].pred[test])

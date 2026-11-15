@@ -31,7 +31,7 @@ import data
 import export_results as er
 import synthetic_control as sc
 from benchmark import (
-    CLASSICAL_MODELS, DISPLAY_NAMES, QUANTUM_SCALE_VALUES, SELECTION_METRIC, fold_features, make_folds,
+    CLASSICAL_MODELS, DISPLAY_NAMES, QUANTUM_REPS_VALUES, QUANTUM_SCALE_VALUES, SELECTION_METRIC, fold_features, make_folds,
     model_config, run_nested_cv,
 )
 from features import FoldFeatures
@@ -135,7 +135,7 @@ def smoke_test(engine, seed) -> dict:
     """Prove the simulator runs this exact feature map before the large job."""
     rng = np.random.default_rng(seed)
     report = {}
-    for reps in (2, 3):
+    for reps in QUANTUM_REPS_VALUES:
         x = rng.uniform(0, np.pi, size=(3, N_QUBITS))
         measured = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine).states(x, scale=0.25)
         reference = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, ReferenceEngine()).states(x, scale=0.25)
@@ -240,39 +240,16 @@ def main(argv=None) -> str:
                                          QUANTUM_SCALE_VALUES, args.workers, pool=pool)
         return QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine, scales=QUANTUM_SCALE_VALUES)
 
-    attempts = []  # (reps, {target: ModelOutcome}, seconds)
     with stages.timed("quantum", "Quantum feature map and kernel", sdk, "kernel_quantum.npz"):
         check = smoke_test(engine, args.seed) if args.engine == "quantum_rings" else {}
-
-        def run_quantum(reps):
-            start, result = time.perf_counter(), {}
-            for key, target in targets.items():
-                print(f"  {key} reps={reps}", flush=True)
-                kernel = make_kernel(reps)
-                result[key] = run_nested_cv(
-                    target.y, target.folds, target.features_for_fold, args.seed, args.inner_folds,
-                    quantum=kernel, classical=False, on_progress=progress)["qsvm"]
-            attempts.append((reps, result, time.perf_counter() - start))
-
-        run_quantum(2)
-        syn = targets["synthetic"]
-        q_score = mean_fold_score(syn.y, syn.folds, attempts[0][1]["synthetic"].pred)
-        rbf_score = mean_fold_score(syn.y, syn.folds, outcomes["synthetic"]["rbf"].pred)
-        retry = not (q_score > rbf_score)
-        compared = f"macro F1 on the synthetic control was {q_score:.3f} for QSVM and {rbf_score:.3f} for RBF"
-        if retry:
-            run_quantum(3)
-            reasons = {
-                2: f"Initial configuration. Its {compared}, which triggered the retry rule.",
-                3: "Run because reps=2 did not beat RBF on the synthetic control, and reported as "
-                   "final as the project spec requires. This choice was made after seeing held-out "
-                   "scores, so read the reps=3 result as optimistic.",
-            }
-        else:
-            reasons = {2: f"Initial configuration. Its {compared}, so the retry rule was not triggered."}
-        final_reps = attempts[-1][0]
-        for key in targets:
-            outcomes[key]["qsvm"] = attempts[-1][1][key]
+        # One kernel per circuit depth. Depth, input scale and C are all chosen on inner
+        # folds, so no quantum setting is ever picked by looking at held-out scores.
+        kernels_by_reps = {reps: make_kernel(reps) for reps in QUANTUM_REPS_VALUES}
+        for key, target in targets.items():
+            print(f"  {key}", flush=True)
+            outcomes[key]["qsvm"] = run_nested_cv(
+                target.y, target.folds, target.features_for_fold, args.seed, args.inner_folds,
+                quantum=list(kernels_by_reps.values()), classical=False, on_progress=progress)["qsvm"]
 
     with stages.timed("evaluation", "Evaluation and display projections", "scikit-learn", "results.json"):
         display = make_pipeline().fit(counts)
@@ -282,33 +259,28 @@ def main(argv=None) -> str:
             "biological": display_coordinates(display.variable_genes(counts), args.seed, not args.no_umap),
             "synthetic": display_coordinates(x_display["synthetic"], args.seed, not args.no_umap),
         }
-        final_kernel = make_kernel(final_reps)
-        inputs, quantum_kernels = {}, {}
+        inputs, quantum_kernels, display_choice = {}, {}, {}
         for key, target in targets.items():
             x = x_display[key]
             gamma = float(1.0 / (x.shape[1] * x.var()))
             kernels = er.classical_display_kernels(x, rbf_gamma=gamma, poly_gamma=gamma, poly_coef0=0.0)
-            chosen = [params["scale"] for params in outcomes[key]["qsvm"].best_params.values()]
-            display_scale = max(set(chosen), key=lambda s: (chosen.count(s), s))
+            chosen = [(params["reps"], params["scale"]) for params in outcomes[key]["qsvm"].best_params.values()]
+            display_reps, display_scale = max(set(chosen), key=lambda c: (chosen.count(c), -c[0], c[1]))
+            display_choice[key] = display_reps
+            final_kernel = kernels_by_reps[display_reps]
             states = final_kernel.states(x, scale=display_scale)
             kernels["qsvm"] = quantum_kernels[key] = final_kernel.kernel(states, states)
             models = {}
             for name in (*CLASSICAL_MODELS, "qsvm"):
                 o = outcomes[key][name]
                 config = model_config(name)
-                run_attempts = ()
                 if name == "qsvm":
-                    config.update(feature_map="zz_feature_map", n_qubits=N_QUBITS, reps=final_reps,
+                    config.update(feature_map="zz_feature_map", n_qubits=N_QUBITS,
                                   entanglement=ENTANGLEMENT, kernel="fidelity (exact state overlap)")
-                    run_attempts = [
-                        er.QsvmAttempt(reps, reps == final_reps, result[key].pred,
-                                       sum(result[key].fit_seconds.values()) + sum(result[key].predict_seconds.values()))
-                        for reps, result, _ in attempts
-                    ]
                 models[name] = er.ModelRun(
                     display_name=DISPLAY_NAMES[name], pred=o.pred, fit_seconds=o.fit_seconds,
                     predict_seconds=o.predict_seconds, config=config, best_params=o.best_params,
-                    score=o.score, attempts=run_attempts,
+                    score=o.score,
                 )
             biological = key == "biological"
             inputs[key] = er.TargetInputs(
@@ -327,9 +299,9 @@ def main(argv=None) -> str:
                 kernel_params={
                     "rbf": {"gamma": gamma, "gamma_source": "scikit-learn 'scale' on the display features"},
                     "poly2": {"gamma": gamma, "degree": 2, "coef0": 0.0},
-                    "qsvm": {"reps": final_reps, "entanglement": ENTANGLEMENT, "n_qubits": N_QUBITS,
+                    "qsvm": {"reps": display_reps, "entanglement": ENTANGLEMENT, "n_qubits": N_QUBITS,
                              "scale": display_scale,
-                             "scale_source": "input scale selected most often across the outer folds"},
+                             "scale_source": "repetitions and input scale selected most often across the outer folds"},
                 },
                 kernel_fit_scope=(
                     f"Display only. The feature pipeline was fitted on all {len(ids)} benchmark cells and "
@@ -367,9 +339,17 @@ def main(argv=None) -> str:
             "sdk": sdk, "sdk_version": sdk_version, "backend": backend, "n_qubits": N_QUBITS,
             "feature_map": "ZZ feature map (qiskit.circuit.library.zz_feature_map)",
             "entanglement": ENTANGLEMENT,
-            "attempts": [{"reps": reps, "is_final": reps == final_reps, "reason": reasons[reps]}
-                         for reps, _, _ in attempts],
-            "circuits_run_note": "one circuit per cell per fold per input scale; kernel entries are state overlaps",
+            "attempts": [{
+                "reps": display_choice["biological"], "is_final": True,
+                "reason": (
+                    f"Repetitions were not fixed in advance: each outer fold chose among {QUANTUM_REPS_VALUES} "
+                    "on its inner folds, together with the input scale and C. The value shown is the one "
+                    "chosen most often for the biological target; every fold's choice is in results.json. "
+                    "No quantum setting was selected using held-out scores."
+                ),
+            }],
+            "reps_grid": QUANTUM_REPS_VALUES,
+            "circuits_run_note": "one circuit per cell per fold per repetition count per input scale; kernel entries are state overlaps",
             "simulator_settings": "performance HIGHESTACCURACY, double precision" if args.engine == "quantum_rings" else "exact",
             "parallel_workers": args.workers if pool is not None else 1,
             "input_scale_grid": QUANTUM_SCALE_VALUES,
@@ -377,7 +357,8 @@ def main(argv=None) -> str:
                 "Features are multiplied by an input scale before being loaded as rotation angles. "
                 "Unscaled (1.0), this 8-qubit kernel concentrates: nearly every pair of cells has "
                 "similarity close to 1/256, which leaves the SVM nothing to learn from. The scale is "
-                "therefore tuned on inner folds only, exactly as gamma is tuned for the RBF kernel."
+                "therefore tuned on inner folds only, together with the number of repetitions, exactly "
+                "as gamma is tuned for the RBF kernel."
             ),
             "smoke_test": check,
         },
@@ -396,7 +377,7 @@ def main(argv=None) -> str:
         **{f"{k}_{name}": getattr(t, name) for k, t in targets.items()
            for name in ("y", "fold_of", "held_out_features")})
     np.savez_compressed(run_dir / "kernel_quantum.npz", cell_ids=np.asarray(ids, dtype=str), **quantum_kernels)
-    circuit_png = er.save_circuit_image(build_feature_map(N_QUBITS, final_reps, ENTANGLEMENT),
+    circuit_png = er.save_circuit_image(build_feature_map(N_QUBITS, display_choice["biological"], ENTANGLEMENT),
                                         run_dir / "circuit.png", fold=40)
 
     started, t0 = _now(), time.perf_counter()
@@ -410,10 +391,9 @@ def main(argv=None) -> str:
     manifest_path.write_text(json.dumps(written, indent=2) + "\n")
 
     print("\nResults (mean over outer folds):\n" + table((*CLASSICAL_MODELS, "qsvm")))
-    for reps, result, seconds in attempts:
-        tag = "final" if reps == final_reps else "not final"
-        print(f"  QSVM reps={reps} ({tag}), {seconds:.1f}s: " + ", ".join(
-            f"{key} macro F1 {mean_fold_score(t.y, t.folds, result[key].pred):.3f}" for key, t in targets.items()))
+    for key in targets:
+        picks = [(p["reps"], p["scale"], p["C"]) for p in outcomes[key]["qsvm"].best_params.values()]
+        print(f"  QSVM {key} chose (reps, scale, C) per fold: {picks}")
     print(f"\nValidation: {len(report['errors'])} error(s), {len(report['warnings'])} warning(s)")
     for line in report["warnings"] + report.get("exporter_notes", []):
         print(f"  note: {line}")

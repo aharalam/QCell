@@ -19,7 +19,8 @@ from sklearn.svm import SVC
 C_VALUES = [0.01, 0.1, 1, 10, 100]
 GAMMA_VALUES = ["scale", 0.001, 0.01, 0.1, 1, 10]
 SELECTION_METRIC = "f1_macro"
-QUANTUM_SCALE_VALUES = [1.0, 0.5, 0.25, 0.1, 0.05, 0.02]  # input-angle scale (bandwidth)
+QUANTUM_SCALE_VALUES = [1.0, 0.3, 0.1, 0.05, 0.02, 0.01, 0.005]  # input-angle scale (bandwidth)
+QUANTUM_REPS_VALUES = [1, 2, 3]  # feature-map repetitions (circuit depth)
 CLASSICAL_MODELS = ("linear", "poly2", "rbf")
 DISPLAY_NAMES = {
     "linear": "Linear SVM",
@@ -47,7 +48,7 @@ class ModelOutcome:
 def model_config(name: str) -> dict:
     fixed, grid = _GRIDS[name]
     if name == "qsvm":
-        grid = {**grid, "scale": QUANTUM_SCALE_VALUES}
+        grid = {**grid, "scale": QUANTUM_SCALE_VALUES, "reps": QUANTUM_REPS_VALUES}
     return {**fixed, "class_weight": "balanced", "grid": grid, "selection_metric": SELECTION_METRIC}
 
 
@@ -98,7 +99,8 @@ def run_nested_cv(
     features_for_fold(train_idx, test_idx) -> (x_train, x_test).
     quantum, if given, needs states(features) and kernel(states_a, states_b);
     it is run as a precomputed-kernel SVM on exactly the same folds. If it has a
-    `scales` attribute, states(features, scale=...) is tried for each one.
+    `scales` attribute, states(features, scale=...) is tried for each one. A list of
+    such kernels (for example one per circuit depth) is searched the same way.
     """
     y = np.asarray(y)
     names = list(CLASSICAL_MODELS if classical else ()) + (["qsvm"] if quantum is not None else [])
@@ -113,22 +115,25 @@ def run_nested_cv(
             scale = None
             start = time.perf_counter()
             if name == "qsvm":
-                # The input scale is tuned like any other hyperparameter: by inner-fold
-                # score on the training cells only. Ties keep the earlier (larger) scale.
+                # Circuit depth and input scale are tuned like any other hyperparameter: by
+                # inner-fold score on the training cells only. Ties keep the earlier
+                # candidate, so the shallower circuit and the larger scale win a tie.
                 search = None
-                for candidate in getattr(quantum, "scales", None) or [None]:
-                    states = quantum.states(x_train) if candidate is None else quantum.states(x_train, scale=candidate)
-                    fitted = _search(name, seed, inner_folds).fit(quantum.kernel(states, states), y[train])
-                    if search is None or fitted.best_score_ > search.best_score_:
-                        search, scale, train_states = fitted, candidate, states
+                for candidate_kernel in (quantum if isinstance(quantum, (list, tuple)) else [quantum]):
+                    for candidate in getattr(candidate_kernel, "scales", None) or [None]:
+                        states = (candidate_kernel.states(x_train) if candidate is None
+                                  else candidate_kernel.states(x_train, scale=candidate))
+                        fitted = _search(name, seed, inner_folds).fit(candidate_kernel.kernel(states, states), y[train])
+                        if search is None or fitted.best_score_ > search.best_score_:
+                            search, scale, train_states, chosen = fitted, candidate, states, candidate_kernel
             else:
                 search = _search(name, seed, inner_folds).fit(x_train, y[train])
             result.fit_seconds[k] = time.perf_counter() - start
 
             start = time.perf_counter()
             if name == "qsvm":
-                test_states = quantum.states(x_test) if scale is None else quantum.states(x_test, scale=scale)
-                held_out = quantum.kernel(test_states, train_states)
+                test_states = chosen.states(x_test) if scale is None else chosen.states(x_test, scale=scale)
+                held_out = chosen.kernel(test_states, train_states)
             else:
                 held_out = x_test
             result.pred[test] = search.predict(held_out)
@@ -137,6 +142,8 @@ def run_nested_cv(
             result.best_params[k] = _plain(search.best_params_)
             if scale is not None:
                 result.best_params[k]["scale"] = scale
+            if name == "qsvm":
+                result.best_params[k].update(getattr(chosen, "params", {}))
             if on_progress:
                 on_progress(name, k, result.fit_seconds[k] + result.predict_seconds[k])
     return out

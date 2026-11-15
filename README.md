@@ -27,7 +27,7 @@ Two targets are scored with the same folds, the same cells and the same 8 featur
 Two method notes that matter when reading results:
 
 - **Input scale.** Unscaled, the 8-qubit kernel concentrates: nearly every pair of cells has similarity near 1/256, and the SVM predicts a single class. The quantum model therefore has an input scale, tuned on inner folds only, the same way gamma is tuned for RBF.
-- **Repetitions.** The run starts at `reps=2`. If the QSVM does not beat RBF on the synthetic control, `reps=3` is run and reported as final, as the project spec requires. That choice uses held-out scores, so the `reps=3` result should be read as optimistic. Every attempt is exported.
+- **Repetitions.** The number of feature-map repetitions (1, 2 or 3) is tuned on inner folds too, alongside the input scale and C. The project spec's original rule, retry at `reps=3` if `reps=2` loses to RBF on the synthetic control, was dropped because it picks a setting using held-out scores. No quantum setting is chosen that way here. Each fold's choice is recorded in `results.json`.
 
 ## Setup
 

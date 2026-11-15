@@ -106,6 +106,11 @@ class QuantumKernel:
         self._template = self.engine.prepare(self.feature_map)
         self.circuits_run = 0
 
+    @property
+    def params(self) -> dict:
+        """What identifies this kernel among the candidates tuned on inner folds."""
+        return {"reps": self.reps}
+
     def states(self, features: np.ndarray, scale: float = 1.0) -> np.ndarray:
         """One simulated state per cell. `scale` multiplies the angles before loading:
         it is the kernel's bandwidth, the counterpart of gamma for an RBF kernel."""
@@ -156,6 +161,10 @@ class ParallelQuantumKernel:
         self.circuits_run = 0
         self._owns_pool = pool is None
         self._pool = pool or ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+
+    @property
+    def params(self) -> dict:
+        return {"reps": self.reps}
 
     def __enter__(self):
         return self
