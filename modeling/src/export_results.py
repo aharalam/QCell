@@ -51,7 +51,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 SCHEMA_VERSION = "1.0"
-TARGET_KEYS = ("biological", "synthetic")
+TARGET_KEYS = ("biological", "synthetic")  # always present
+OPTIONAL_TARGET_KEYS = ("quantum_structured",)  # exported and validated when present
 MODEL_KEYS = ("linear", "poly2", "rbf", "qsvm")
 KERNEL_KEYS = ("rbf", "poly2", "qsvm")
 METRIC_KEYS = ("balanced_accuracy", "macro_f1", "rare_recall", "rare_precision")
@@ -116,6 +117,7 @@ class TargetInputs:
     kernel_fit_scope: str  # say these are display-only fits, not scoring fits
     planted: Any = None  # synthetic only: (n_cells, 2) planted x1, x2
     decision_regions: dict | None = None  # synthetic only, optional
+    extra: Mapping[str, Any] | None = None  # optional per-cell values, name -> one number per cell
 
 
 class BundleError(ValueError):
@@ -413,6 +415,9 @@ def _target_blocks(
             problems.append("synthetic.planted: the two planted dimensions are required")
         else:
             planted = _matrix(t.planted, (n, 2), "synthetic.planted", problems)
+    extras = {}
+    for extra_name, values in (t.extra or {}).items():
+        extras[str(extra_name)] = _matrix(values, (n,), f"{key}.extra.{extra_name}", problems)
     if not str(t.kernel_fit_scope).strip():
         problems.append(f"{key}.kernel_fit_scope: say how the display kernels were fitted")
     if len(problems) > before or y is None or fold is None:
@@ -483,6 +488,8 @@ def _target_blocks(
             cell["score"] = {name: _r(scores[name][i], 5) for name in MODEL_KEYS}
         if planted is not None:
             cell["planted"] = {"x1": _r(planted[i, 0], 5), "x2": _r(planted[i, 1], 5)}
+        if extras:
+            cell["extra"] = {extra_name: _r(values[i], 6) for extra_name, values in extras.items()}
         cells.append(cell)
 
     cells_block = {"feature_names": [str(f) for f in t.feature_names], "cells": cells}
@@ -588,12 +595,15 @@ def build_bundle(
     for key in TARGET_KEYS:
         if key not in targets:
             problems.append(f"targets: missing '{key}'")
+    for key in targets:
+        if key not in TARGET_KEYS + OPTIONAL_TARGET_KEYS:
+            problems.append(f"targets: unknown target '{key}'")
     if problems:
         raise BundleError(problems)
     seed = int(manifest.get("cv", {}).get("seed", 0) or 0)
 
     results_t, cells_t, kernels_t = {}, {}, {}
-    for key in TARGET_KEYS:
+    for key in (*TARGET_KEYS, *(k for k in OPTIONAL_TARGET_KEYS if k in targets)):
         blocks = _target_blocks(key, targets[key], n_bootstrap, seed, problems, notes)
         if blocks:
             results_t[key], cells_t[key], kernels_t[key] = blocks
@@ -747,7 +757,11 @@ def validate_bundle(manifest: Any, results: Any, cells: Any, kernels: Any) -> di
     w1: list = []
     w3: list = []
 
-    for target in TARGET_KEYS:
+    optional_present = [
+        key for key in OPTIONAL_TARGET_KEYS
+        if any(isinstance(_lookup(doc, f"targets.{key}"), dict) for doc in (results, cells, kernels))
+    ]
+    for target in (*TARGET_KEYS, *optional_present):
         r = _lookup(results, f"targets.{target}")
         c = _lookup(cells, f"targets.{target}")
         k = _lookup(kernels, f"targets.{target}")
