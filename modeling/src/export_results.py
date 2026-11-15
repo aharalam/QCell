@@ -989,9 +989,9 @@ def collect_software_versions(
     return versions
 
 
-def save_circuit_image(circuit: Any, path: str | os.PathLike) -> Path:
+def save_circuit_image(circuit: Any, path: str | os.PathLike, fold: int = -1) -> Path:
     """Draw a Qiskit circuit (for example the decomposed ZZFeatureMap) to an image."""
-    figure = circuit.draw(output="mpl", fold=-1)
+    figure = circuit.draw(output="mpl", fold=fold)
     figure.savefig(path, dpi=200, bbox_inches="tight")
     return Path(path)
 

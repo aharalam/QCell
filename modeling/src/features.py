@@ -55,6 +55,10 @@ class FoldFeatures:
     def _scale(self, selected: np.ndarray) -> np.ndarray:
         return np.clip((selected - self.mean_) / self.std_, -10, 10)
 
+    def variable_genes(self, counts: np.ndarray) -> np.ndarray:
+        """Scaled expression of the selected genes (used for display projections)."""
+        return self._scale(log_normalize(np.asarray(counts, dtype=float))[:, self.gene_index_])
+
     def transform(self, counts: np.ndarray) -> np.ndarray:
         logged = log_normalize(np.asarray(counts, dtype=float))
         components = self.pca_.transform(self._scale(logged[:, self.gene_index_]))
