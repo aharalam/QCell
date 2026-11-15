@@ -292,3 +292,45 @@ def test_cli_placeholder_then_validate(tmp_path, capsys):
     cells["targets"]["biological"]["cells"][0]["y_true"] ^= 1
     (out / "cells.json").write_text(json.dumps(cells))
     assert er.main(["validate", str(out)]) == 1
+
+
+# ---- optional third target ---------------------------------------------------
+
+
+def third_target(inputs):
+    """A copy of the biological placeholder target with 3 features and an extra per-cell value."""
+    import copy as _copy
+
+    _, targets = inputs
+    extra = _copy.deepcopy(targets["biological"])
+    extra.feature_names = ["a", "b", "c"]
+    extra.features = np.asarray(extra.features)[:, :3]
+    extra.extra = {"expectation": np.linspace(-1, 1, len(extra.cell_ids))}
+    return extra
+
+
+def test_a_third_target_is_exported_and_validated_like_the_others(inputs):
+    manifest, targets = inputs
+    targets["quantum_structured"] = third_target(inputs)
+    built, _ = er.build_bundle(manifest, targets, n_bootstrap=0)
+    assert set(built["results"]["targets"]) == {"biological", "synthetic", "quantum_structured"}
+    cells = built["cells"]["targets"]["quantum_structured"]
+    assert cells["feature_names"] == ["a", "b", "c"] and len(cells["cells"][0]["features"]) == 3
+    assert cells["cells"][0]["extra"]["expectation"] == pytest.approx(-1.0)
+    assert "extra" not in built["cells"]["targets"]["biological"]["cells"][0]
+    assert validate(built)["errors"] == []
+
+
+def test_tampering_with_the_third_target_is_caught(inputs):
+    manifest, targets = inputs
+    targets["quantum_structured"] = third_target(inputs)
+    built, _ = er.build_bundle(manifest, targets, n_bootstrap=0)
+    cell = built["cells"]["targets"]["quantum_structured"]["cells"][0]
+    cell["pred"]["qsvm"] = 1 - cell["pred"]["qsvm"]
+    assert "E5" in codes(validate(built)["errors"])
+
+
+def test_an_unknown_target_name_is_refused(inputs):
+    manifest, targets = inputs
+    targets["mystery"] = targets["biological"]
+    expect_problem(manifest, targets, "unknown target")
