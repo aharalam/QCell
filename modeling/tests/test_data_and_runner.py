@@ -83,3 +83,27 @@ def test_runner_writes_a_bundle_the_dashboard_accepts(tmp_path, monkeypatch):
         x1, x2 = cell["planted"]["x1"], cell["planted"]["x2"]
         assert cell["y_true"] == int((x1 > 0) != (x2 > 0))
     assert (bundle_dir / "circuit.png").is_file()
+
+    # Third target: labels come from measuring each cell's own 3-qubit state.
+    third = bundle["cells"]["targets"]["quantum_structured"]
+    assert len(third["feature_names"]) == 3 and len(third["cells"]) == 70
+    values = np.array([cell["extra"]["expectation"] for cell in third["cells"]])
+    labels = np.array([cell["y_true"] for cell in third["cells"]])
+    assert labels.sum() == 35 and values[labels == 1].min() > values[labels == 0].max()
+    structured = bundle["results"]["targets"]["quantum_structured"]
+    assert set(structured["models"]) == {"linear", "poly2", "rbf", "qsvm"}
+    assert len(structured["models"]["qsvm"]["folds"]) == 3
+    info = manifest["quantum_structured"]
+    assert (info["n_qubits"], info["reps"], info["input_scale"]) == (3, 2, 1.0) and "engineered" in info["evidence_type"].lower()
+    assert bundle["kernels"]["targets"]["quantum_structured"]["params"]["qsvm"]["n_qubits"] == 3
+
+    # Kernel-collapse explorer: the 8-qubit kernel on a subset of cells at three input scales.
+    explorer = json.loads((bundle_dir / "collapse_explorer.json").read_text())
+    assert explorer["run_id"] == "test-run" and explorer["n_qubits"] == 8
+    assert [entry["scale"] for entry in explorer["scales"]] == [1.0, 0.1, 0.05]
+    size = len(explorer["cell_ids"])
+    assert 0 < size <= 60 and len(explorer["y_true"]) == size
+    for entry in explorer["scales"]:
+        assert len(entry["matrix"]) == size and len(entry["matrix"][0]) == size
+        assert 0 <= entry["accuracy"]["balanced_accuracy"] <= 1 and 0 <= entry["accuracy"]["macro_f1"] <= 1
+    assert explorer["scales"][0]["off_diagonal_mean"] < explorer["scales"][2]["off_diagonal_mean"]

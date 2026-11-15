@@ -12,7 +12,7 @@ Four models are compared on identical folds, cells and features: linear, degree-
 
 - On real cell-type labels, the quantum model **ties** the best classical models. It does not beat them.
 - On a simple planted interaction (XOR), a classical RBF kernel is **slightly ahead**.
-- On signals that have the structure of the quantum circuit itself, the quantum model **wins clearly** in early exploratory tests (about 15 points over the best classical model at 3 qubits). This is not yet in the pipeline.
+- On an engineered signal with the structure of the quantum circuit itself, the quantum model **wins clearly**: 0.874 against 0.725 for the best classical model on Quantum Rings, and ahead in all six further samples tested (section 14).
 - The quantum model costs roughly 400 to 800 times more compute than any classical model here.
 - The pipeline is reproducible: an identical rerun matched every prediction and metric exactly.
 
@@ -26,11 +26,12 @@ Four models are compared on identical folds, cells and features: linear, degree-
 | Classical SVM benchmarks with nested cross-validation | Built, tested, run |
 | Quantum kernel on the Quantum Rings SDK | Built, verified against a reference simulation, run |
 | End-to-end runner and bundle exporter | Built, tested, run three times |
-| Test suite | 73 tests passing |
+| Test suite | 84 tests passing |
 | Pull request | Open: https://github.com/aharalam/QCell/pull/1 |
 | Base44 dashboard | Prompts written (`base44_prompts.md`); app not built |
 | Seqera / nf-core run | Not done; bundles mark that stage as skipped |
-| Circuit-structured target (the quantum win) | Explored locally only; not in the pipeline |
+| Circuit-structured target (the quantum win) | Built, tested, run on Quantum Rings, and checked on six further samples (section 14) |
+| Kernel-collapse explorer data | Built, tested, exported in the bundle (section 14) |
 | Demo video, Devpost submission | Not done |
 
 Three validated bundles exist under `artifacts/` (git-ignored):
@@ -38,8 +39,9 @@ Three validated bundles exist under `artifacts/` (git-ignored):
 | Run | Method | Notes |
 |---|---|---|
 | `qcell-run-01` | Spec's retry rule (`reps=2`, then `reps=3`) | Kept for comparison |
-| `qcell-run-02` | Repetitions and input scale tuned on inner folds | The one to present |
+| `qcell-run-02` | Repetitions and input scale tuned on inner folds | Two targets only |
 | `qcell-run-03` | Identical rerun of run 02 | Matches run 02 exactly |
+| `qcell-run-04` | Run 02's method plus the third target and the collapse explorer | The one to present |
 
 ## 4. Main results
 
@@ -219,3 +221,61 @@ Present runs 01 to 03 and the six-sample table as a careful negative result with
 - The rare class is deliberately enriched (18.5% of the sample against 1.4% of the dataset), so precision is higher than it would be at natural prevalence.
 - Six samples is enough to see that the dendritic result is a tie, not enough for fine statistical claims.
 - All quantum results are exact simulations of 8 or fewer qubits, which any laptop can compute.
+
+## 14. Update: third target and collapse explorer on Quantum Rings
+
+Run `qcell-run-04` added the circuit-structured target (Direction A) and the kernel-collapse explorer data (Direction C) to the pipeline. The dendritic and XOR results in this run are identical, prediction for prediction, to run 02.
+
+### Circuit-structured target, Quantum Rings
+
+200 cells (100 positive by construction), 5 outer folds, seed 42. Three input features, 3 qubits.
+
+| Model | Macro F1 | Balanced accuracy | Rare recall | Rare precision |
+|---|---|---|---|---|
+| Linear | 0.643 ± 0.126 | 0.650 | 0.680 | 0.633 |
+| Poly-2 | 0.674 ± 0.086 | 0.680 | 0.770 | 0.652 |
+| RBF | 0.725 ± 0.035 | 0.725 | 0.700 | 0.739 |
+| QSVM | **0.874 ± 0.025** | **0.875** | 0.900 | 0.863 |
+
+- QSVM leads the best classical model by 0.149 macro F1. Its worst fold (0.848) is above RBF's best fold (0.774), and the bootstrap intervals do not overlap (QSVM 0.825 to 0.919, RBF 0.660 to 0.785).
+- RBF and QSVM disagree on 56 cells. QSVM is right on 43 of them, RBF on 13.
+- Inner-fold tuning chose `reps=2` at input scale 1.0 in every fold, which is the circuit that generated the labels.
+- QSVM took 381 seconds on this target.
+
+### Robustness across six further samples
+
+Each seed changes the cells drawn, the folds, and the random measurement that defines the labels. These used the local reference simulator. "RBF wide" is RBF with a larger tuning grid, added so the classical side cannot be said to have been held back. Values are macro F1.
+
+| Seed | Linear | Poly-2 | RBF | RBF wide | QSVM | QSVM lead over best classical |
+|---|---|---|---|---|---|---|
+| 1 | 0.627 | 0.651 | 0.748 | 0.761 | 0.833 | +0.072 |
+| 2 | 0.575 | 0.647 | 0.714 | 0.719 | 0.874 | +0.155 |
+| 3 | 0.619 | 0.671 | 0.797 | 0.801 | 0.910 | +0.109 |
+| 4 | 0.439 | 0.667 | 0.728 | 0.733 | 0.885 | +0.152 |
+| 5 | 0.430 | 0.632 | 0.795 | 0.780 | 0.930 | +0.135 |
+| 6 | 0.600 | 0.608 | 0.800 | 0.794 | 0.885 | +0.085 |
+| **Mean** | 0.548 | 0.646 | 0.764 | 0.765 | 0.886 | +0.118 |
+
+QSVM is ahead in 6 of 6 samples. The wider RBF grid made no real difference (0.765 against 0.764). Tuning chose `reps=2` at scale 1.0 in all 30 folds.
+
+**What this supports:** on a signal with quantum-circuit structure planted in real cell features, the quantum kernel beat every classical kernel tested, consistently.
+
+**What it does not support:** any claim about real cell types, or that such signals occur in biology. The signal is engineered, and the three input features are fitted once on all cells because the labels are defined from them.
+
+### Kernel-collapse explorer
+
+The 8-qubit kernel (`reps=2`) on a fixed subset of 60 cells (20 dendritic), with the held-out accuracy of a QSVM forced to each input scale on all 200 cells.
+
+| Input scale | Mean similarity between different cells | Balanced accuracy | Macro F1 | Cells predicted dendritic |
+|---|---|---|---|---|
+| 1.0 | 0.0055 | 0.500 | 0.449 | 0 of 200 |
+| 0.1 | 0.0963 | 0.860 | 0.848 | 39 |
+| 0.05 | 0.4484 | 0.855 | 0.820 | 45 |
+
+A fully collapsed 8-qubit kernel would give every pair 1/256, about 0.0039. At scale 1.0 the kernel is essentially there, and the model predicts no dendritic cells at all.
+
+### Notes on this run
+
+- Validation: 0 errors, 0 warnings. No credentials in the bundle or log.
+- QSVM runtimes for the dendritic and XOR targets (1,246 and 954 seconds) are higher than in run 02 because the robustness check shared the processor during the run. The predictions are unaffected.
+- Files for the dashboard are in `artifacts/qcell-run-04/dashboard_bundle/`: `results.json`, `cells.json`, `kernels.json`, `run_manifest.json`, `collapse_explorer.json`, and two circuit images.
