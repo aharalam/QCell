@@ -27,7 +27,15 @@ ACCOUNT_VARIABLE = "QUANTUM_RINGS_ACCOUNT"
 
 
 def build_feature_map(n_qubits: int, reps: int, entanglement: str = "full") -> QuantumCircuit:
-    return zz_feature_map(n_qubits, reps=reps, entanglement=entanglement)
+    """ZZ feature map on a circuit with a named qubit register.
+
+    Qiskit's zz_feature_map returns qubits that belong to no register, which the
+    Quantum Rings translator cannot handle, so the gates are copied onto a
+    standard registered circuit. The gates and parameters are unchanged.
+    """
+    circuit = QuantumCircuit(n_qubits, name="zz_feature_map")
+    circuit.compose(zz_feature_map(n_qubits, reps=reps, entanglement=entanglement), inplace=True)
+    return circuit
 
 
 def fidelity_kernel(states_a: np.ndarray, states_b: np.ndarray) -> np.ndarray:
@@ -80,7 +88,8 @@ class QuantumRingsEngine:
             native, shots=1, mode="sync", performance=self.performance,
             precision=self.precision, quiet=True, defaults=True, transfer_to_cpu=True,
         )
-        job.wait_for_final_state(0.0, 5.0, lambda *_: None)
+        # mode="sync" returns a finished job, so no polling wait is needed (verified to
+        # give identical states and about a third less time per circuit).
         return np.asarray(job.result().get_statevector()).reshape(-1)
 
 
@@ -111,6 +120,63 @@ class QuantumKernel:
             out.append(self.engine.statevector(bound))
             self.circuits_run += 1
         return np.vstack(out)
+
+    def kernel(self, states_a: np.ndarray, states_b: np.ndarray) -> np.ndarray:
+        return fidelity_kernel(states_a, states_b)
+
+
+_WORKER_KERNELS: dict = {}
+
+
+def _worker_states(task):
+    """Runs in a worker process: one engine per process, reused across calls."""
+    engine_kind, n_qubits, reps, entanglement, rows = task
+    key = (engine_kind, n_qubits, reps, entanglement)
+    if key not in _WORKER_KERNELS:
+        engine = quantum_rings_engine_from_env() if engine_kind == "quantum_rings" else ReferenceEngine()
+        _WORKER_KERNELS[key] = QuantumKernel(n_qubits, reps, entanglement, engine)
+    return _WORKER_KERNELS[key].states(rows)
+
+
+class ParallelQuantumKernel:
+    """Same interface as QuantumKernel, with circuits spread over worker processes.
+
+    Each worker opens its own simulator session. Credentials reach the workers
+    through the environment, never through arguments.
+    """
+
+    def __init__(self, n_qubits: int, reps: int, entanglement: str = "full",
+                 engine_kind: str = "quantum_rings", scales=(1.0,), workers: int = 4, pool=None):
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+
+        self.n_qubits, self.reps, self.entanglement = n_qubits, reps, entanglement
+        self.engine_kind, self.scales, self.workers = engine_kind, tuple(scales), workers
+        self.feature_map = build_feature_map(n_qubits, reps, entanglement)
+        self.circuits_run = 0
+        self._owns_pool = pool is None
+        self._pool = pool or ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self):
+        if self._owns_pool:
+            self._pool.shutdown()
+
+    def states(self, features: np.ndarray, scale: float = 1.0) -> np.ndarray:
+        features = np.asarray(features, dtype=float) * scale
+        if features.ndim != 2 or features.shape[1] != self.n_qubits:
+            raise ValueError(
+                f"expected {self.n_qubits} features per cell, got shape {features.shape}"
+            )
+        chunks = [c for c in np.array_split(features, self.workers) if len(c)]
+        tasks = [(self.engine_kind, self.n_qubits, self.reps, self.entanglement, c) for c in chunks]
+        self.circuits_run += len(features)
+        return np.vstack(list(self._pool.map(_worker_states, tasks)))  # map keeps input order
 
     def kernel(self, states_a: np.ndarray, states_b: np.ndarray) -> np.ndarray:
         return fidelity_kernel(states_a, states_b)

@@ -132,3 +132,26 @@ def test_smaller_input_scale_undoes_kernel_concentration():
     wide = kernel.kernel(kernel.states(x), kernel.states(x))[off_diagonal].mean()
     narrow = kernel.kernel(kernel.states(x, scale=0.05), kernel.states(x, scale=0.05))[off_diagonal].mean()
     assert wide < 0.02 and narrow > 10 * wide and narrow > 0.15
+
+
+def test_feature_map_qubits_belong_to_a_named_register():
+    # The Quantum Rings translator looks qubits up by register name; Qiskit's
+    # zz_feature_map returns register-less qubits, which it cannot translate.
+    circuit = build_feature_map(n_qubits=4, reps=2)
+    assert len(circuit.qregs) == 1 and circuit.qregs[0].size == 4
+    assert all(circuit.find_bit(q).registers for q in circuit.qubits)
+
+
+def test_parallel_workers_return_the_same_states_in_the_same_order():
+    from quantum_kernel import ParallelQuantumKernel
+
+    x = angles(23, 4, seed=21)
+    serial = QuantumKernel(4, reps=2, engine=ReferenceEngine())
+    with ParallelQuantumKernel(4, reps=2, engine_kind="reference", workers=3, scales=(1.0, 0.1)) as parallel:
+        assert parallel.scales == (1.0, 0.1)
+        assert parallel.states(x, scale=0.1) == pytest.approx(serial.states(x, scale=0.1), abs=1e-12)
+        assert parallel.circuits_run == 23
+        assert parallel.kernel(parallel.states(x), parallel.states(x)) == pytest.approx(
+            serial.kernel(serial.states(x), serial.states(x)), abs=1e-10)
+        with pytest.raises(ValueError, match="4 features"):
+            parallel.states(angles(3, 5))

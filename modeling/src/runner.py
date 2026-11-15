@@ -36,7 +36,7 @@ from benchmark import (
 )
 from features import FoldFeatures
 from quantum_kernel import (
-    QuantumKernel, ReferenceEngine, build_feature_map, load_env_file,
+    ParallelQuantumKernel, QuantumKernel, ReferenceEngine, build_feature_map, load_env_file,
     quantum_rings_engine_from_env,
 )
 
@@ -124,6 +124,7 @@ def parse_args(argv):
     p.add_argument("--out", default="artifacts")
     p.add_argument("--run-id", default=None)
     p.add_argument("--no-umap", action="store_true", help="skip UMAP (tests only)")
+    p.add_argument("--workers", type=int, default=6, help="parallel simulator processes (Quantum Rings only)")
     p.add_argument("--seqera-run-url", default="")
     p.add_argument("--seqera-pipeline", default="")
     p.add_argument("--seqera-status", default="")
@@ -226,6 +227,19 @@ def main(argv=None) -> str:
         sdk, sdk_version = "Qiskit reference statevector", f"qiskit {metadata.version('qiskit')}"
         backend = f"{engine.name} (NOT Quantum Rings): local check run"
 
+    pool = None
+    if args.engine == "quantum_rings" and args.workers > 1:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+
+        pool = ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn"))
+
+    def make_kernel(reps):
+        if pool is not None:
+            return ParallelQuantumKernel(N_QUBITS, reps, ENTANGLEMENT, "quantum_rings",
+                                         QUANTUM_SCALE_VALUES, args.workers, pool=pool)
+        return QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine, scales=QUANTUM_SCALE_VALUES)
+
     attempts = []  # (reps, {target: ModelOutcome}, seconds)
     with stages.timed("quantum", "Quantum feature map and kernel", sdk, "kernel_quantum.npz"):
         check = smoke_test(engine, args.seed) if args.engine == "quantum_rings" else {}
@@ -234,7 +248,7 @@ def main(argv=None) -> str:
             start, result = time.perf_counter(), {}
             for key, target in targets.items():
                 print(f"  {key} reps={reps}", flush=True)
-                kernel = QuantumKernel(N_QUBITS, reps, ENTANGLEMENT, engine, scales=QUANTUM_SCALE_VALUES)
+                kernel = make_kernel(reps)
                 result[key] = run_nested_cv(
                     target.y, target.folds, target.features_for_fold, args.seed, args.inner_folds,
                     quantum=kernel, classical=False, on_progress=progress)["qsvm"]
@@ -268,7 +282,7 @@ def main(argv=None) -> str:
             "biological": display_coordinates(display.variable_genes(counts), args.seed, not args.no_umap),
             "synthetic": display_coordinates(x_display["synthetic"], args.seed, not args.no_umap),
         }
-        final_kernel = QuantumKernel(N_QUBITS, final_reps, ENTANGLEMENT, engine)
+        final_kernel = make_kernel(final_reps)
         inputs, quantum_kernels = {}, {}
         for key, target in targets.items():
             x = x_display[key]
@@ -326,6 +340,8 @@ def main(argv=None) -> str:
                 planted=None if biological else planted,
             )
 
+    if pool is not None:
+        pool.shutdown()
     n_pos, n_all = int(y_bio.sum()), len(y_bio)
     manifest = {
         "run_id": run_id,
@@ -354,6 +370,8 @@ def main(argv=None) -> str:
             "attempts": [{"reps": reps, "is_final": reps == final_reps, "reason": reasons[reps]}
                          for reps, _, _ in attempts],
             "circuits_run_note": "one circuit per cell per fold per input scale; kernel entries are state overlaps",
+            "simulator_settings": "performance HIGHESTACCURACY, double precision" if args.engine == "quantum_rings" else "exact",
+            "parallel_workers": args.workers if pool is not None else 1,
             "input_scale_grid": QUANTUM_SCALE_VALUES,
             "input_scale_note": (
                 "Features are multiplied by an input scale before being loaded as rotation angles. "
